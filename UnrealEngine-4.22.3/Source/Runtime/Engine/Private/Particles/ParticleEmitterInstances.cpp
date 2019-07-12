@@ -2842,67 +2842,32 @@ void FParticleEmitterInstance::ApplyWorldOffset(FVector InOffset, bool bWorldShi
 
 void FParticleEmitterInstance::Tick_MaterialOverrides(int32 EmitterIndex)
 {
-	if (!Component)
-		return;
-
 	UParticleLODLevel* LODLevel = SpriteTemplate->GetCurrentLODLevel(this);
-	if (LODLevel && LODLevel->RequiredModule)
+	bool bOverridden = false;
+	if (LODLevel && LODLevel->RequiredModule && Component && Component->Template)
 	{
 		TArray<FName>& NamedOverrides = LODLevel->RequiredModule->NamedMaterialOverrides;
-		if (NamedOverrides.Num() > 0)
+		if (Component && NamedOverrides.Num() > 0)
 		{
-			CurrentMaterial = Component->GetNamedMaterial(NamedOverrides[0]);
+			UMaterialInterface* NamedMaterial = Component->GetNamedMaterial(NamedOverrides[0]);
+			if (NamedMaterial)
+			{
+				CurrentMaterial = NamedMaterial;
+				bOverridden = true;
+			}
 		}
-	}
-
-	int32 MaterialRegionOffset = 0, NumMaterialsInRegion = 0;
-	Component->GetMaterialsRegion(EmitterIndex, MaterialRegionOffset, NumMaterialsInRegion);
-	if (Component->EmitterMaterials.IsValidIndex(MaterialRegionOffset) &&
-		Component->EmitterMaterials[MaterialRegionOffset])
-	{
-		CurrentMaterial = Component->EmitterMaterials[MaterialRegionOffset];
-	}
-
-	/*UParticleLODLevel* LODLevel = SpriteTemplate->GetCurrentLODLevel(this);
-	bool bOverridden = false;
-	if( LODLevel && LODLevel->RequiredModule && Component && Component->Template )
-	{
-	        TArray<FName>& NamedOverrides = LODLevel->RequiredModule->NamedMaterialOverrides;
-	        TArray<FNamedEmitterMaterial>& Slots = Component->Template->NamedMaterialSlots;
-	        TArray<UMaterialInterface*>& EmitterMaterials = Component->EmitterMaterials;
-	        if (NamedOverrides.Num() > 0)
-	        {
-		        //If we have named material overrides then get it's index into the emitter materials array.
-		        //Only check for [0] in in the named overrides as most emitter types only need one material. Mesh emitters might use more but they override this function.		
-		        for (int32 CheckIdx = 0; CheckIdx < Slots.Num(); ++CheckIdx)
-		        {
-			        if (NamedOverrides[0] == Slots[CheckIdx].Name)
-			        {
-				        //Default to the default material for that slot.
-				        CurrentMaterial = Slots[CheckIdx].Material;
-				        if (EmitterMaterials.IsValidIndex(CheckIdx) && nullptr != EmitterMaterials[CheckIdx])
-				        {
-					        //This material has been overridden externally, e.g. from a BP so use that one.
-					        CurrentMaterial = EmitterMaterials[CheckIdx];
-				        }
-        
-				        bOverridden = true;
-				        break;
-			        }
-		        }
-	        }
 	}
 
 	if (bOverridden == false && Component)
 	{
-		if (Component->EmitterMaterials.IsValidIndex(EmitterIndex))
+		if (Component->EmitterMaterialOverrides.IsValidIndex(EmitterIndex))
 		{
-			if (Component->EmitterMaterials[EmitterIndex])
+			if (Component->EmitterMaterialOverrides[EmitterIndex])
 			{
-				CurrentMaterial = Component->EmitterMaterials[EmitterIndex];
+				CurrentMaterial = Component->EmitterMaterialOverrides[EmitterIndex];
 			}
 		}
-	}*/
+	}
 }
 
 bool FParticleEmitterInstance::UseLocalSpace()
@@ -3300,81 +3265,39 @@ void FParticleMeshEmitterInstance::Tick(float DeltaTime, bool bSuppressSpawning)
 
 void FParticleMeshEmitterInstance::Tick_MaterialOverrides(int32 EmitterIndex)
 {
-	if (!Component)
-		return;
-
-	int32 MaterialRegionOffset = 0, NumMaterialsInRegion = 0;
-	Component->GetMaterialsRegion(EmitterIndex, MaterialRegionOffset, NumMaterialsInRegion);
-
-	CurrentMaterials.SetNumZeroed(NumMaterialsInRegion);
-
-	UParticleLODLevel* LODLevel = SpriteTemplate->GetCurrentLODLevel(this);
-	if (LODLevel && LODLevel->RequiredModule)
-	{
-		TArray<FName>& NamedOverrides = LODLevel->RequiredModule->NamedMaterialOverrides;
-
-		for (int i = 0; i < NumMaterialsInRegion; ++i)
-		{
-			if (Component->EmitterMaterials.IsValidIndex(MaterialRegionOffset + i) &&
-				Component->EmitterMaterials[MaterialRegionOffset + i])
-			{
-				CurrentMaterials[i] = Component->EmitterMaterials[MaterialRegionOffset + i];
-			}
-			else if (NamedOverrides.IsValidIndex(i))
-			{
-				CurrentMaterials[i] = Component->GetNamedMaterial(NamedOverrides[i]);
-			}
-		}
-	}
-
 	// we need to do this here, since CurrentMaterials is unique to mesh emitters, so this can't be done from the component. CurrentMaterials 
 	// may end up in MeshMaterials, so if this doesn't get updated, rendering may access a garbage collected material
 
 	// make sure currentmaterials are all set to the emitter material, so we don't end up with GC'd material pointers
 	// in MeshMaterials when GetMeshMaterials pushes CurrentMaterials to MeshMaterials
-	/*if (Component && Component->EmitterMaterials.IsValidIndex(EmitterIndex))
+
+	CurrentMaterials.SetNum(GetNumMaterials());
+
+	if (Component && Component->EmitterMaterialOverrides.IsValidIndex(EmitterIndex) && Component->EmitterMaterialOverrides[EmitterIndex])
 	{
-		if (Component->EmitterMaterials[EmitterIndex])
+		for (UMaterialInterface *& CurMat : CurrentMaterials)
 		{
-			for (UMaterialInterface *& CurMat : CurrentMaterials)
-			{
-				CurMat = Component->EmitterMaterials[EmitterIndex];
-			}
+			CurMat = Component->EmitterMaterialOverrides[EmitterIndex];
 		}
-	}	
+	}
 
 	UParticleLODLevel* LODLevel = SpriteTemplate->GetCurrentLODLevel(this);
-	bool bOverridden = false;
 	if (LODLevel && LODLevel->RequiredModule && Component && Component->Template)
 	{
 		TArray<FName>& NamedOverrides = LODLevel->RequiredModule->NamedMaterialOverrides;
 		TArray<FNamedEmitterMaterial>& Slots = Component->Template->NamedMaterialSlots;
-		TArray<UMaterialInterface*>& EmitterMaterials = Component->EmitterMaterials;
+		TArray<UMaterialInterface*>& NamedMaterialOverrides = Component->NamedMaterialOverrides;
 		if (NamedOverrides.Num() > 0)
 		{
 			CurrentMaterials.SetNumZeroed(NamedOverrides.Num());
 			for (int32 MaterialIdx = 0; MaterialIdx < NamedOverrides.Num(); ++MaterialIdx)
 			{
-				//If we have named material overrides then get it's index into the emitter materials array.	
-				for (int32 CheckIdx = 0; CheckIdx < Slots.Num(); ++CheckIdx)
-				{
-					if (NamedOverrides[MaterialIdx] == Slots[CheckIdx].Name)
-					{
-						//Default to the default material for that slot.
-						CurrentMaterials[MaterialIdx] = Slots[CheckIdx].Material;
-						if (EmitterMaterials.IsValidIndex(CheckIdx) && nullptr != EmitterMaterials[CheckIdx])
-						{
-							//This material has been overridden externally, e.g. from a BP so use that one.
-							CurrentMaterials[MaterialIdx] = EmitterMaterials[CheckIdx];
-						}
-
-						bOverridden = true;
-						break;
-					}
-				}
+				UMaterialInterface* NewMaterial = Component ? Component->GetNamedMaterial(NamedOverrides[MaterialIdx]) : nullptr;
+				if (NewMaterial)
+					CurrentMaterials[MaterialIdx] = NewMaterial;
 			}
 		}
-	}*/
+	}
 }
 
 /**

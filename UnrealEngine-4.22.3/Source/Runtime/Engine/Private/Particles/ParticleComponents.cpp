@@ -4310,30 +4310,18 @@ FParticleDynamicData* UParticleSystemComponent::CreateDynamicData(ERHIFeatureLev
 
 int32 UParticleSystemComponent::GetNumMaterials() const
 {
-	int32 NumMaterials = 0;
-	
-	for (int32 i = 0; i < EmitterInstances.Num(); ++i)
-	{
-		if (FParticleEmitterInstance* Inst = EmitterInstances[i])
-		{
-			NumMaterials += Inst->GetNumMaterials();
-		}
-	}
-
-	return NumMaterials;
-
-	/*if (Template)
+	if (Template)
 	{
 		return Template->Emitters.Num();
 	}
-	return 0;*/
+	return 0;
 }
 
 UMaterialInterface* UParticleSystemComponent::GetMaterial(int32 ElementIndex) const
 {
-	if (EmitterMaterials.IsValidIndex(ElementIndex) && EmitterMaterials[ElementIndex] != NULL)
+	if (EmitterMaterialOverrides.IsValidIndex(ElementIndex) && EmitterMaterialOverrides[ElementIndex])
 	{
-		return EmitterMaterials[ElementIndex];
+		return EmitterMaterialOverrides[ElementIndex];
 	}
 	if (Template && Template->Emitters.IsValidIndex(ElementIndex))
 	{
@@ -4350,42 +4338,33 @@ UMaterialInterface* UParticleSystemComponent::GetMaterial(int32 ElementIndex) co
 	return NULL;
 }
 
+void UParticleSystemComponent::SetMaterialInternal(int32 EmitterIndex, UMaterialInterface* InMaterial)
+{
+	EmitterMaterialOverrides.SetNum(Template ? Template->Emitters.Num() : 0);
+
+	if (EmitterMaterialOverrides.IsValidIndex(EmitterIndex))
+		EmitterMaterialOverrides[EmitterIndex] = InMaterial;
+}
+
+void UParticleSystemComponent::SetNamedMaterialInternal(const FName& MaterialName, UMaterialInterface* InMaterial)
+{
+	int32 NumSlots = Template ? Template->NamedMaterialSlots.Num() : 0;
+	NamedMaterialOverrides.SetNum(NumSlots);
+	for (int32 i = 0; i < NumSlots; ++i)
+	{
+		if (Template->NamedMaterialSlots[i].Name == MaterialName)
+		{
+			NamedMaterialOverrides[i] = InMaterial;
+			break;
+		}
+	}
+}
+
 void UParticleSystemComponent::SetMaterial(int32 ElementIndex, UMaterialInterface* Material)
 {
 	ForceAsyncWorkCompletion(STALL);
 
-	if (Template &&
-		Template->Emitters.IsValidIndex(ElementIndex) &&
-		EmitterInstances.IsValidIndex(ElementIndex))
-	{
-		// Find materials region
-		int32 MaterialRegionOffset = 0, NumMaterialsInRegion = 0;
-		GetMaterialsRegion(ElementIndex, MaterialRegionOffset, NumMaterialsInRegion);
-
-		// Check space for new materials
-		int32 LastMaterialIndex = MaterialRegionOffset + NumMaterialsInRegion - 1;
-		if (!EmitterMaterials.IsValidIndex(LastMaterialIndex))
-		{
-			EmitterMaterials.AddZeroed(LastMaterialIndex + 1 - EmitterMaterials.Num());
-		}
-		
-		// Setup data
-		for (int i = 0; i < NumMaterialsInRegion; ++i)
-		{
-			EmitterMaterials[MaterialRegionOffset + i] = Material;
-		}
-		bIsViewRelevanceDirty = true;
-	}
-
-	/*if (Template && Template->Emitters.IsValidIndex(ElementIndex))
-	{
-		if (!EmitterMaterials.IsValidIndex(ElementIndex))
-		{
-			EmitterMaterials.AddZeroed(ElementIndex + 1 - EmitterMaterials.Num());
-		}
-		EmitterMaterials[ElementIndex] = Material;
-		bIsViewRelevanceDirty = true;
-	}*/
+	SetMaterialInternal(ElementIndex, Material);
 
 	for (int32 EmitterIndex = 0; EmitterIndex < EmitterInstances.Num(); ++EmitterIndex)
 	{
@@ -4397,31 +4376,6 @@ void UParticleSystemComponent::SetMaterial(int32 ElementIndex, UMaterialInterfac
 
 	MarkRenderDynamicDataDirty();
 	MarkRenderStateDirty();
-}
-
-void UParticleSystemComponent::GetMaterialsRegion(int32 EmitterIndex, int32& MaterialRegionOffset, int32& NumMaterialsInRegion)
-{
-	MaterialRegionOffset = 0;
-	NumMaterialsInRegion = 0;
-	
-	if (Template &&
-		Template->Emitters.IsValidIndex(EmitterIndex) &&
-		EmitterInstances.IsValidIndex(EmitterIndex))
-	{
-		NumMaterialsInRegion = EmitterInstances[EmitterIndex] ? EmitterInstances[EmitterIndex]->GetNumMaterials() : 1;
-
-		for (int32 i = 0; i < EmitterIndex; ++i)
-		{
-			if (FParticleEmitterInstance* Inst = EmitterInstances[i])
-			{
-				MaterialRegionOffset += Inst->GetNumMaterials();
-			}
-			else
-			{
-				MaterialRegionOffset++;
-			}
-		}
-	}
 }
 
 void UParticleSystemComponent::ClearDynamicData()
@@ -5829,12 +5783,13 @@ void UParticleSystemComponent::SetTemplate(class UParticleSystem* NewTemplate)
 	{
 		Template = NULL;
 	}
-	if (!ensureMsgf(IsRenderStateDirty() || EmitterMaterials.Num() == 0, TEXT("About to lose material references without calling MarkRenderStateDirty on: %s"), *GetOwner()->GetName()))
+	if (!ensureMsgf(IsRenderStateDirty() || (EmitterMaterialOverrides.Num() == 0 && NamedMaterialOverrides.Num() == 0), TEXT("About to lose material references without calling MarkRenderStateDirty on: %s"), *GetOwner()->GetName()))
 	{
 		MarkRenderStateDirty();
 	}
-	
-	EmitterMaterials.Empty();
+
+	EmitterMaterialOverrides.Empty();
+	NamedMaterialOverrides.Empty();
 
 	for (int32 Idx = 0; Idx < EmitterInstances.Num(); Idx++)
 	{
@@ -7438,7 +7393,7 @@ void UParticleSystemComponent::AutoPopulateInstanceProperties()
 	}
 }
 
-void UParticleLODLevel::GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials, const TArray<FNamedEmitterMaterial>& Slots, const TArray<class UMaterialInterface*>& EmitterMaterials) const
+void UParticleLODLevel::GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials, const TArray<FNamedEmitterMaterial>& Slots, const UParticleSystemComponent* InComponent) const
 {
 	// Only process enabled emitters
 	if (bEnabled)
@@ -7458,21 +7413,10 @@ void UParticleLODLevel::GetUsedMaterials(TArray<UMaterialInterface*>& OutMateria
 
 				if (NamedOverrides.IsValidIndex(SectionIndex))
 				{	
-					//If we have named material overrides then get it's index into the emitter materials array.	
-					for (int32 CheckIdx = 0; CheckIdx < Slots.Num(); ++CheckIdx)
+					UMaterialInterface* NamedMaterial = InComponent->GetNamedMaterial(NamedOverrides[SectionIndex]);
+					if (NamedMaterial)
 					{
-						if (NamedOverrides[SectionIndex] == Slots[CheckIdx].Name)
-						{
-							//Default to the default material for that slot.
-							Material = Slots[CheckIdx].Material;
-							if (EmitterMaterials.IsValidIndex(CheckIdx) && nullptr != EmitterMaterials[CheckIdx] )
-							{
-								//This material has been overridden externally, e.g. from a BP so use that one.
-								Material = EmitterMaterials[CheckIdx];
-							}
-
-							break;
-						}
+						Material = NamedMaterial;
 					}
 				}
 
@@ -7520,20 +7464,10 @@ void UParticleLODLevel::GetUsedMaterials(TArray<UMaterialInterface*>& OutMateria
 
 			if (NamedOverrides.Num() > 0)
 			{
-				for (int32 CheckIdx = 0; CheckIdx < Slots.Num(); ++CheckIdx)
+				UMaterialInterface* NamedMaterial = InComponent->GetNamedMaterial(NamedOverrides[0]);
+				if (NamedMaterial)
 				{
-					if (NamedOverrides[0] == Slots[CheckIdx].Name)
-					{
-						//Default to the default material for that slot.
-						Material = Slots[CheckIdx].Material;
-						if (EmitterMaterials.IsValidIndex(CheckIdx) && nullptr != EmitterMaterials[CheckIdx])
-						{
-							//This material has been overridden externally, e.g. from a BP so use that one.
-							Material = EmitterMaterials[CheckIdx];
-						}
-        
-						break;
-					}
+					Material = NamedMaterial;
 				}
 			}
 
@@ -7564,13 +7498,14 @@ void UParticleSystemComponent::GetUsedMaterials( TArray<UMaterialInterface*>& Ou
 				const UParticleLODLevel* LOD = Emitter->LODLevels[LodIndex];
 				if (LOD)
 				{
-					LOD->GetUsedMaterials(OutMaterials, Template->NamedMaterialSlots, EmitterMaterials);
+					LOD->GetUsedMaterials(OutMaterials, Template->NamedMaterialSlots, this);
 				}
 			}
 		}
 	}
 
-	OutMaterials.Append(EmitterMaterials);
+	OutMaterials.Append(EmitterMaterialOverrides);
+	OutMaterials.Append(NamedMaterialOverrides);
 }
 
 typedef TPair<const UMaterialInterface*, float> FMaterialWithScale;
@@ -7620,12 +7555,13 @@ void UParticleSystemComponent::GetStreamingTextureInfo(FStreamingTextureLevelCon
 				}
 
 				LODLevelMaterials.Reset();
-				LOD->GetUsedMaterials(LODLevelMaterials, Template->NamedMaterialSlots, EmitterMaterials);
+				LOD->GetUsedMaterials(LODLevelMaterials, Template->NamedMaterialSlots, this);
 				AddMaterials(MaterialWithScales, LODLevelMaterials, (float)FMath::Max<int32>(LOD->RequiredModule->SubImages_Horizontal, LOD->RequiredModule->SubImages_Vertical));
 			}
 		}
 
-		AddMaterials(MaterialWithScales, EmitterMaterials, 1.f);
+		AddMaterials(MaterialWithScales, EmitterMaterialOverrides, 1.f);
+		AddMaterials(MaterialWithScales, NamedMaterialOverrides, 1.f);
 
 		if (MaterialWithScales.Num())
 		{
@@ -7820,100 +7756,16 @@ UMaterialInstanceDynamic* UParticleSystemComponent::CreateNamedDynamicMaterialIn
 	SetMaterialByName(Name, MID);
 
 	return MID;
-	/*int32 Index = GetNamedMaterialIndex(Name);
-	if (INDEX_NONE == Index)
-	{
-		UE_LOG(LogParticles, Warning, TEXT("CreateNamedDynamicMaterialInstance on %s: This material wasn't found. Check the particle system's named material slots in cascade."), *GetPathName(), *Name.ToString());
-		return NULL;
-	}
-
-	if (SourceMaterial)
-	{
-		SetMaterial(Index, SourceMaterial);
-	}
-
-	UMaterialInterface* MaterialInstance = GetMaterial(Index);
-	UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(MaterialInstance);
-
-	if (MaterialInstance && !MID)
-	{
-		// Create and set the dynamic material instance.
-		MID = UMaterialInstanceDynamic::Create(MaterialInstance, this);
-		SetMaterial(Index, MID);
-	}
-	else if (!MaterialInstance)
-	{
-		UE_LOG(LogParticles, Warning, TEXT("CreateDynamicMaterialInstance on %s: Material index %d is invalid."), *GetPathName(), Index);
-	}
-
-	return MID;*/
 }
 
 void UParticleSystemComponent::SetMaterialByName(FName MaterialSlotName, class UMaterialInterface* SourceMaterial)
 {
-	if (!Template || !SourceMaterial)
-		return;
-
 	ForceAsyncWorkCompletion(STALL);
 
-
-	int32 NumEmitters = FMath::Min(Template->Emitters.Num(), EmitterInstances.Num());
-	for (int32 EmitterIndex = 0; EmitterIndex < NumEmitters; ++EmitterIndex)
-	{
-		if (FParticleEmitterInstance* Inst = EmitterInstances[EmitterIndex])
-		{
-			UParticleLODLevel* LODLevel1 = Template->Emitters[EmitterIndex]->GetCurrentLODLevel(Inst);
-			if (LODLevel1)
-			{
-				const TArray<FName>& NamedMaterialOverrides = LODLevel1->RequiredModule->NamedMaterialOverrides;
-
-				int32 MaterialRegionOffset = 0, NumMaterialsInRegion = 0;
-				GetMaterialsRegion(EmitterIndex, MaterialRegionOffset, NumMaterialsInRegion);
-
-				NumMaterialsInRegion = FMath::Min(NumMaterialsInRegion, NamedMaterialOverrides.Num());
-
-				// Check space for new materials
-				int32 LastMaterialIndex = MaterialRegionOffset + NumMaterialsInRegion - 1;
-				if (!EmitterMaterials.IsValidIndex(LastMaterialIndex))
-				{
-					EmitterMaterials.AddZeroed(LastMaterialIndex + 1 - EmitterMaterials.Num());
-				}
-
-				// Setup data
-				for (int i = 0; i < NumMaterialsInRegion; ++i)
-				{
-					if (NamedMaterialOverrides[i] == MaterialSlotName)
-					{
-						EmitterMaterials[MaterialRegionOffset + i] = SourceMaterial;
-						bIsViewRelevanceDirty = true;
-					}
-				}
-			}
-		}
-	}
-
-	for (int32 EmitterIndex = 0; EmitterIndex < EmitterInstances.Num(); ++EmitterIndex)
-	{
-		if (FParticleEmitterInstance* Inst = EmitterInstances[EmitterIndex])
-		{
-			Inst->Tick_MaterialOverrides(EmitterIndex);
-		}
-	}
+	SetNamedMaterialInternal(MaterialSlotName, SourceMaterial);
 
 	MarkRenderDynamicDataDirty();
 	MarkRenderStateDirty();
-
-	/*int32 Index = GetNamedMaterialIndex(MaterialSlotName);
-	if (INDEX_NONE == Index)
-	{
-		UE_LOG(LogParticles, Warning, TEXT("SetMaterialByName on %s: %s named material wasn't found. Check the particle system's named material slots in cascade."), *GetPathName(), *MaterialSlotName.ToString());
-		return;
-	}
-
-	if (SourceMaterial)
-	{
-		SetMaterial(Index, SourceMaterial);
-	}*/
 }
 
 UMaterialInterface* UParticleSystemComponent::GetNamedMaterial(FName Name) const
@@ -7921,17 +7773,16 @@ UMaterialInterface* UParticleSystemComponent::GetNamedMaterial(FName Name) const
 	int32 Index = GetNamedMaterialIndex(Name);
 	if (INDEX_NONE != Index)
 	{
-		return Template ? Template->NamedMaterialSlots[Index].Material : nullptr;
-		/*if (EmitterMaterials.IsValidIndex(Index) && nullptr != EmitterMaterials[Index])
+		if (NamedMaterialOverrides.IsValidIndex(Index) && NamedMaterialOverrides[Index])
 		{
 			//Material has been overridden externally
-			return EmitterMaterials[Index];
+			return NamedMaterialOverrides[Index];
 		}
 		else
 		{
 			//This slot hasn't been overridden so just used the default.
 			return Template ? Template->NamedMaterialSlots[Index].Material : nullptr;
-		}*/
+		}
 	}
 	//Could not find this named materials slot.
 	return nullptr;

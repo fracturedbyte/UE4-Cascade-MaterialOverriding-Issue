@@ -338,7 +338,13 @@ class ENGINE_API UParticleSystemComponent : public UPrimitiveComponent
 	class UParticleSystem* Template;
 
 	UPROPERTY(transient, duplicatetransient)
-	TArray<class UMaterialInterface*> EmitterMaterials;
+	TArray<class UMaterialInterface*> EmitterMaterialOverrides;
+
+	UPROPERTY(transient, duplicatetransient)
+	TArray<class UMaterialInterface*> NamedMaterialOverrides;
+
+	void SetMaterialInternal(int32 EmitterIndex, UMaterialInterface* InMaterial);
+	void SetNamedMaterialInternal(const FName& MaterialName, UMaterialInterface* InMaterial);
 
 	/**
 	 *	The skeletal mesh components used with the socket location module.
@@ -1243,8 +1249,6 @@ public:
 	virtual void GetStreamingTextureInfo(FStreamingTextureLevelContext& LevelContext, TArray<FStreamingTexturePrimitiveInfo>& OutStreamingTextures) const override;
 	virtual FBodyInstance* GetBodyInstance(FName BoneName = NAME_None, bool bGetWelded = true) const override;
 	//End UPrimitiveComponent Interface
-
-	void GetMaterialsRegion(int32 EmitterIndex, int32& MaterialRegionOffset, int32& NumMaterialsInRegion);
 
 	//~ Begin USceneComonent Interface
 protected:
